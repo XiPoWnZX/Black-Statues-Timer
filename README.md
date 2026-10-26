@@ -2,8 +2,6 @@
 
 **STRICTLY RESTRICTED FOR *[Black Statues](https://www.torn.com/factions.php?step=profile&ID=9412)* faction from Torn City**
 
-**[DOWNLOAD](https://github.com/XiPoWnZX/Black-Statues-Timer/blob/main/blackstatueschaintimer.py)**
-
 This is a private script for computer to always have the chain timer of Black Statues on your screen.
 
 **Timer features**
@@ -75,7 +73,7 @@ Never share your API key with anyone.
 
 **3. Run the timer**
 
-Download the Black Statues Chain Timer Python script.
+Download the Black Statues Chain Timer Python script. **[DOWNLOAD](https://github.com/XiPoWnZX/Black-Statues-Timer/blob/main/blackstatueschaintimer.py)**
 
 Save the file somewhere easy to find, such as your Desktop or Documents folder.
 
