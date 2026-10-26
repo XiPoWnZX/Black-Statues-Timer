@@ -65,3 +65,4 @@ Python is not recognized: Reinstall Python and enable “Add python.exe to PATH,
 API key rejected: Make sure you enabled the required permissions and your character belongs to BLACK STATUES (Faction ID 9412).
 The timer cannot connect: Check your internet connection and verify that your API key is valid.
 Need help? Contact XiPoWnZX through in-game mail or discord.
+Any idea to add to this widget? Contact me.
