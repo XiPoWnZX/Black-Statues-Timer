@@ -25,7 +25,12 @@ except ImportError:
 
 APP_NAME = "Black Statues Chain"
 FACTION_ID = 9412
+
+# Existing chain endpoint
 API_URL = f"https://api.torn.com/faction/{FACTION_ID}"
+
+# API v2 endpoint used to verify the API key owner's faction
+VERIFY_API_URL = "https://api.torn.com/v2/user/faction"
 
 POLL_INTERVAL = 5
 REQUEST_TIMEOUT = 10
@@ -77,6 +82,11 @@ class ChainTimerApp:
         self.poll_stop_event = threading.Event()
         self.result_queue = queue.Queue()
         self.request_lock = threading.Lock()
+
+        # The key is verified before being saved and again when a
+        # previously saved key is first used during this app session.
+        self.validated_api_key = None
+        self.key_validation_in_progress = False
 
         self.alarm_stop_event = threading.Event()
         self.alarm_thread = None
@@ -132,9 +142,18 @@ class ChainTimerApp:
             return False
 
     def open_settings(self):
+        if self.key_validation_in_progress:
+            messagebox.showinfo(
+                "API Key",
+                "An API key is already being verified. Please wait.",
+                parent=self.root
+            )
+            return
+
         new_key = simpledialog.askstring(
             "API Key",
-            "Enter your Torn API key:",
+            "Enter your Torn API key:\n"
+            "Only keys belonging to faction 9412 are accepted.",
             initialvalue=self.config.get("api_key", ""),
             show="*",
             parent=self.root
@@ -143,11 +162,167 @@ class ChainTimerApp:
         if new_key is None:
             return
 
-        self.config["api_key"] = new_key.strip()
+        new_key = new_key.strip()
 
-        if self.save_config():
-            self.set_message("API key saved.")
-            self.refresh_api()
+        if not new_key:
+            messagebox.showwarning(
+                "API Key",
+                "The API key cannot be empty.",
+                parent=self.root
+            )
+            return
+
+        if new_key == self.config.get("api_key", "").strip():
+            self.set_message("Checking the saved API key...")
+        else:
+            self.set_message("Verifying API key and faction membership...")
+
+        self.key_validation_in_progress = True
+
+        threading.Thread(
+            target=self.validate_key_worker,
+            args=(new_key,),
+            daemon=True
+        ).start()
+
+    # --------------------------------------------------------
+    # TORN API KEY VALIDATION
+    # --------------------------------------------------------
+
+    def validate_api_key(self, api_key):
+        """
+        Verify the API key owner's faction using Torn API v2.
+
+        Expected response:
+        {
+            "faction": {
+                "id": 9412,
+                "name": "BLACK STATUES"
+            }
+        }
+        """
+        params = urllib.parse.urlencode({
+            "key": api_key,
+            "timestamp": str(int(time.time()))
+        })
+
+        request = urllib.request.Request(
+            f"{VERIFY_API_URL}?{params}",
+            headers={
+                "User-Agent": "BlackStatuesChainTimer/1.0",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache"
+            }
+        )
+
+        with urllib.request.urlopen(
+            request, timeout=REQUEST_TIMEOUT
+        ) as response:
+            data = json.loads(response.read().decode("utf-8"))
+
+        if not isinstance(data, dict):
+            raise ValueError("Torn returned an unexpected verification response.")
+
+        if "error" in data:
+            error = data["error"]
+            if isinstance(error, dict):
+                raise ValueError(
+                    f"Torn API error {error.get('code', '?')}: "
+                    f"{error.get('error', 'Unknown error')}"
+                )
+            raise ValueError(str(error))
+
+        faction = data.get("faction")
+
+        if not isinstance(faction, dict):
+            raise ValueError(
+                "Torn did not return faction information for this API key. "
+                "Make sure the key has access to the user → faction selection "
+                "and that its owner is currently in a faction."
+            )
+
+        faction_id = faction.get("id")
+
+        try:
+            faction_id = int(faction_id)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "Torn returned an invalid faction ID. The key cannot be verified."
+            )
+
+        if faction_id != FACTION_ID:
+            faction_name = faction.get("name", "Unknown faction")
+            raise ValueError(
+                f"This API key belongs to faction '{faction_name}' "
+                f"(ID {faction_id}), not BLACK STATUES (ID {FACTION_ID}). "
+                "The key was not saved."
+            )
+
+        return {
+            "id": faction_id,
+            "name": faction.get("name", "BLACK STATUES")
+        }
+
+    def validate_key_worker(self, api_key):
+        try:
+            faction = self.validate_api_key(api_key)
+            self.result_queue.put(
+                ("key_validated", {
+                    "api_key": api_key,
+                    "faction": faction
+                })
+            )
+        except urllib.error.HTTPError as exc:
+            self.result_queue.put(
+                ("key_validation_error",
+                 f"HTTP error {exc.code}: {exc.reason}")
+            )
+        except urllib.error.URLError as exc:
+            self.result_queue.put(
+                ("key_validation_error",
+                 f"Network error while verifying the key: {exc.reason}")
+            )
+        except Exception as exc:
+            self.result_queue.put(
+                ("key_validation_error", str(exc))
+            )
+
+    def handle_key_validated(self, result):
+        self.key_validation_in_progress = False
+
+        api_key = result["api_key"]
+        faction = result["faction"]
+
+        # Only store the key after successful faction verification.
+        old_key = self.config.get("api_key", "")
+        self.config["api_key"] = api_key
+
+        if not self.save_config():
+            self.config["api_key"] = old_key
+            self.validated_api_key = None
+            return
+
+        self.validated_api_key = api_key
+
+        self.set_message(
+            f"Verified: {faction['name']} (ID {faction['id']})."
+        )
+
+        # Fetch the chain after successful verification.
+        self.refresh_api()
+
+    def handle_key_validation_error(self, error):
+        self.key_validation_in_progress = False
+
+        self.set_message("API key verification failed.")
+
+        messagebox.showerror(
+            "API Key Rejected",
+            "The API key could not be verified for BLACK STATUES.\n\n"
+            f"{error}\n\n"
+            "The new key was not saved.",
+            parent=self.root
+        )
 
     # --------------------------------------------------------
     # WINDOW POSITIONING
@@ -171,10 +346,8 @@ class ChainTimerApp:
     def update_lock_buttons(self):
         if self.locked:
             text = "🔒"
-            tooltip_message = "Locked: click to unlock and move"
         else:
             text = "🔓"
-            tooltip_message = "Unlocked: click to lock in place"
 
         self.normal_lock_button.config(
             text=text,
@@ -188,12 +361,8 @@ class ChainTimerApp:
             activebackground="#914444" if self.locked else "#505666"
         )
 
-        self.normal_lock_button.config(
-            command=self.toggle_lock
-        )
-        self.compact_lock_button.config(
-            command=self.toggle_lock
-        )
+        self.normal_lock_button.config(command=self.toggle_lock)
+        self.compact_lock_button.config(command=self.toggle_lock)
 
     # --------------------------------------------------------
     # USER INTERFACE
@@ -219,9 +388,7 @@ class ChainTimerApp:
             fg="white", bg=bg,
             anchor="center"
         )
-        self.title_label.pack(
-            side="left", fill="x", expand=True
-        )
+        self.title_label.pack(side="left", fill="x", expand=True)
 
         self.normal_lock_button = tk.Button(
             normal_top,
@@ -336,9 +503,7 @@ class ChainTimerApp:
             fg="white", bg=bg,
             anchor="center"
         )
-        self.compact_title.pack(
-            side="left", fill="x", expand=True
-        )
+        self.compact_title.pack(side="left", fill="x", expand=True)
 
         self.expand_button = tk.Button(
             compact_top,
@@ -419,18 +584,14 @@ class ChainTimerApp:
             self.normal_frame.pack_forget()
             self.compact_frame.pack(fill="both", expand=True)
 
-            self.position_top_right(
-                COMPACT_WIDTH, COMPACT_HEIGHT
-            )
+            self.position_top_right(COMPACT_WIDTH, COMPACT_HEIGHT)
         else:
             self.compact_mode = False
 
             self.compact_frame.pack_forget()
             self.normal_frame.pack(fill="both", expand=True)
 
-            self.position_top_right(
-                NORMAL_WIDTH, NORMAL_HEIGHT
-            )
+            self.position_top_right(NORMAL_WIDTH, NORMAL_HEIGHT)
 
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.85)
@@ -447,7 +608,6 @@ class ChainTimerApp:
         self.drag_x = event.x_root - self.root.winfo_x()
         self.drag_y = event.y_root - self.root.winfo_y()
 
-    
     def drag_window(self, event):
         if self.locked:
             return
@@ -457,15 +617,26 @@ class ChainTimerApp:
 
         self.root.geometry(f"+{x}+{y}")
 
-
     # --------------------------------------------------------
     # TORN API
     # --------------------------------------------------------
 
     def fetch_chain_data(self):
         api_key = self.config.get("api_key", "").strip()
+
         if not api_key:
             raise ValueError("No API key. Click API Key to add it.")
+
+        # Verify a saved key before using it during this app session.
+        # Successful verification is cached to avoid making an extra
+        # verification request every five seconds.
+        if self.validated_api_key != api_key:
+            faction = self.validate_api_key(api_key)
+            self.validated_api_key = api_key
+
+            self.result_queue.put(
+                ("status", f"Verified faction: {faction['name']} (ID {faction['id']}).")
+            )
 
         params = urllib.parse.urlencode({
             "selections": "chain",
@@ -533,6 +704,10 @@ class ChainTimerApp:
         }
 
     def refresh_api(self):
+        if self.key_validation_in_progress:
+            self.set_message("Please wait for API key verification to finish.")
+            return
+
         threading.Thread(
             target=self.api_request_worker,
             daemon=True
@@ -561,6 +736,10 @@ class ChainTimerApp:
     def start_polling(self):
         if self.polling:
             self.set_message("Automatic polling is already running.")
+            return
+
+        if self.key_validation_in_progress:
+            self.set_message("Please wait for API key verification to finish.")
             return
 
         if not self.config.get("api_key", "").strip():
@@ -598,14 +777,30 @@ class ChainTimerApp:
         try:
             while True:
                 kind, value = self.result_queue.get_nowait()
+
                 if kind == "success":
                     self.apply_api_timeout(value)
-                else:
+
+                elif kind == "error":
                     self.set_message(f"API request failed: {value}")
+
+                elif kind == "status":
+                    self.set_message(value)
+
+                elif kind == "key_validated":
+                    self.handle_key_validated(value)
+
+                elif kind == "key_validation_error":
+                    self.handle_key_validation_error(value)
+
         except queue.Empty:
             pass
 
-        self.root.after(100, self.process_queue)
+        try:
+            if self.root.winfo_exists():
+                self.root.after(100, self.process_queue)
+        except tk.TclError:
+            pass
 
     def apply_api_timeout(self, result):
         now = time.monotonic()
@@ -665,7 +860,10 @@ class ChainTimerApp:
 
     def set_message(self, message):
         self.last_api_message = message
-        self.status_label.config(text=message)
+        try:
+            self.status_label.config(text=message)
+        except (tk.TclError, AttributeError):
+            pass
 
     def update_warning_labels(self, now):
         if self.last_success_monotonic is None:
