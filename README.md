@@ -1,6 +1,6 @@
 **# Black-Statues-Timer**
 
-**STRICTLY RESTRICTED FOR Black Statues from Torn City**
+**STRICTLY RESTRICTED FOR *[Black Statues](https://www.torn.com/factions.php?step=profile&ID=9412)* faction from Torn City**
 
 This is a private script for computer to always have the chain timer of Black Statues on your screen.
 
