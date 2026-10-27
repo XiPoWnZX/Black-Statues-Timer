@@ -28,7 +28,7 @@ jobs:
         run: python -m pip install --upgrade pip pyinstaller
 
       - name: Check Python syntax
-        run: python -m py_compile black_statues_chain_timer.py
+        run: python -m py_compile blackstatueschaintimer_MAC.py
 
       - name: Build macOS application
         run: |
