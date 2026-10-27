@@ -29,7 +29,23 @@ API connection and unchanged-timeout warnings
 
 ***Black Statues Chain Timer — Installation Guide***
 
-**1. Install Python (if you don't already have it)**
+**1. Create your custom Torn API key**
+
+The timer requires a custom API key to retrieve the Black Statues faction chain timer.
+
+Create your Custom API key here: [Custom API](https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Black%20Statues%20Chain%20Timer&faction=chain&user=faction)
+
+The timer verifies that your character belongs to BLACK STATUES (Faction ID: 9412). Keys belonging to other factions will be rejected.
+
+Never share your API key with anyone.
+
+You can run the Black Statues Chain Timer.exe and enter your API key from here.
+
+From now you are ready to use the timer!
+
+*If you want a manual installation continue*
+
+**2. Install Python (if you don't already have it)**
 
 The Black Statues Chain Timer requires Python to run.
 
@@ -60,17 +76,6 @@ If the command doesn't work, try:
 py --version
 
 If neither command works, reinstall Python and make sure you enable the option to add Python to PATH.
-
-
-**2. Create your custom Torn API key**
-
-The timer requires a custom API key to retrieve the Black Statues faction chain timer.
-
-Create your Custom API key here: [Custom API](https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Black%20Statues%20Chain%20Timer&faction=chain&user=faction)
-
-The timer verifies that your character belongs to BLACK STATUES (Faction ID: 9412). Keys belonging to other factions will be rejected.
-
-Never share your API key with anyone.
 
 
 **3. Run the timer**
@@ -104,6 +109,6 @@ API key rejected: Make sure you enabled the required permissions and your charac
 
 The timer cannot connect: Check your internet connection and verify that your API key is valid.
 
-Need help? Contact XiPoWnZX through in-game mail or discord.
+Need help? Contact XiPoWnZX through in-game mail or Discord.
 
 Any idea to add to this widget? Contact me.
