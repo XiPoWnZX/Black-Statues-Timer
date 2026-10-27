@@ -1,0 +1,56 @@
+
+name: Build Black Statues Chain for macOS
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "blackstatueschaintimer_MAC.py"
+      - ".github/workflows/build-macos.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Download source code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Check Python syntax
+        run: python -m py_compile black_statues_chain_timer.py
+
+      - name: Build macOS application
+        run: |
+          python -m PyInstaller \
+            --noconfirm \
+            --clean \
+            --windowed \
+            --onedir \
+            --name "Black Statues Chain" \
+            --osx-bundle-identifier com.xipownzx.blackstatueschaintimer \
+            blackstatueschaintimer_MAC.py
+
+      - name: Package application into ZIP
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            "dist/Black Statues Chain Timer.app" \
+            "dist/Black-Statues-Chain-Timer-macOS.zip"
+
+      - name: Upload finished application
+        uses: actions/upload-artifact@v4
+        with:
+          name: Black-Statues-Chain-Timer-macOS
+          path: dist/Black-Statues-Chain-Timer-macOS.zip
+          if-no-files-found: error
+          retention-days: 14
