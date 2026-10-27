@@ -45,7 +45,7 @@ jobs:
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
             "dist/Black Statues Chain-Timer.app" \
-            "dist/Black-Statues-Chain-Timer-macOS.zip"
+            "dist/Black-Statues-Chain-macOS.zip"
 
       - name: Upload finished application
         uses: actions/upload-artifact@v4
