@@ -320,28 +320,35 @@ class ChainTimerApp:
                 "key_validation_error", str(exc)
             ))
 
-    def handle_key_validated(self, result):
-        self.key_validation_in_progress = False
+    
+def handle_key_validated(self, result):
+    self.key_validation_in_progress = False
 
-        api_key = result["api_key"]
-        faction = result["faction"]
+    api_key = result["api_key"]
+    faction = result["faction"]
 
-        old_key = self.config.get("api_key", "")
-        self.config["api_key"] = api_key
+    old_key = self.config.get("api_key", "")
+    self.config["api_key"] = api_key
 
-        if not self.save_config():
-            self.config["api_key"] = old_key
-            self.validated_api_key = None
-            return
+    if not self.save_config():
+        self.config["api_key"] = old_key
+        self.validated_api_key = None
+        return
 
-        self.validated_api_key = api_key
+    self.validated_api_key = api_key
 
-        self.set_message(
-            f"Verified: {faction['name']} "
-            f"(ID {faction['id']})."
-        )
+    self.set_message(
+        f"Verified: {faction['name']} "
+        f"(ID {faction['id']})."
+    )
 
+    # Start automatic polling after the key is verified.
+    if not self.polling:
+        self.start_polling()
+    else:
+        # If polling is already running, refresh immediately.
         self.refresh_api()
+
 
     def handle_key_validation_error(self, error):
         self.key_validation_in_progress = False
