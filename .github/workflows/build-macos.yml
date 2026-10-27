@@ -37,9 +37,14 @@ jobs:
             --clean \
             --windowed \
             --onedir \
-            --name "Black Statues Chain Timer" \
+            --name "Black Statues Chain-Timer" \
             --osx-bundle-identifier com.xipownzx.blackstatueschaintimer \
             blackstatueschaintimer_MAC.py
+
+      - name: Verify application was created
+        run: |
+          ls -la dist/
+          test -d "dist/Black Statues Chain-Timer.app"
 
       - name: Package application into ZIP
         run: |
@@ -50,7 +55,7 @@ jobs:
       - name: Upload finished application
         uses: actions/upload-artifact@v4
         with:
-          name: Black-Statues-Chain-Timer-macOS
-          path: dist/Black-Statues-Chain-Timer-macOS.zip
+          name: Black-Statues-Chain-macOS
+          path: dist/Black-Statues-Chain-macOS.zip
           if-no-files-found: error
           retention-days: 14
