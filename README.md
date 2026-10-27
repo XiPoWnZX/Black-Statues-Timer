@@ -90,7 +90,7 @@ If neither command works, reinstall Python and make sure you enable the option t
 
 **3. Run the timer**
 
-Download the Black Statues Chain Timer Python script. **[DOWNLOAD](https://github.com/XiPoWnZX/Black-Statues-Timer/blob/main/blackstatueschaintimer.py)**
+Download the Black Statues Chain Timer Python script. **[DOWNLOAD](https://github.com/XiPoWnZX/Black-Statues-Timer/blob/main/blackstatueschaintimerV2.py)**
 
 Save the file somewhere easy to find, such as your Desktop or Documents folder.
 
