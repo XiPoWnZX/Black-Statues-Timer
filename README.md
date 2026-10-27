@@ -14,17 +14,27 @@ Automatic API updates every 5 seconds
 
 API key faction verification
 
-Audio alerts during the final 30 seconds
+Audio alerts during the final 60 seconds
 
 Flashing countdown during the final minute
 
 Compact countdown mode
+
+Adjustable window opacity from 60% to 100%, defaulting to 85%
 
 Always-on-top window
 
 Draggable and lockable window
 
 API connection and unchanged-timeout warnings
+
+Automatic Google Sheets guard roster updates every 30 seconds
+
+Clickable guard names that open their Torn profiles
+
+Automatic 1-minute chain failsafe alert to a separate Discord channel, with a role mention, sent once per countdown
+
+Automatic API polling on startup when a saved API key exists
 
 
 ***Black Statues Chain Timer — Installation Guide***
