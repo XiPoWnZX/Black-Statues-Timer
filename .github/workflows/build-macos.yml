@@ -37,14 +37,14 @@ jobs:
             --clean \
             --windowed \
             --onedir \
-            --name "Black Statues Chain" \
+            --name "Black Statues Chain Timer" \
             --osx-bundle-identifier com.xipownzx.blackstatueschaintimer \
             blackstatueschaintimer_MAC.py
 
       - name: Package application into ZIP
         run: |
           ditto -c -k --sequesterRsrc --keepParent \
-            "dist/Black Statues Chain Timer.app" \
+            "dist/Black Statues Chain-Timer.app" \
             "dist/Black-Statues-Chain-Timer-macOS.zip"
 
       - name: Upload finished application
