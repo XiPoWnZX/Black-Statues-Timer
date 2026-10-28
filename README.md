@@ -43,7 +43,7 @@ Automatic API polling on startup when a saved API key exists
 
 The timer requires a custom API key to retrieve the Black Statues faction chain timer.
 
-Create your Custom API key here: [Custom API](https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Black%20Statues%20Chain%20Timer&faction=chain&user=faction)
+Create your Custom API key here: [Custom API V3](https://www.torn.com/preferences.php#tab=api?step=addNewKey&faction=chain,attacks&user=faction,attacks&title=Black%20Statues%20Chain%20Timer%20V3)
 
 The timer verifies that your character belongs to BLACK STATUES (Faction ID: 9412). Keys belonging to other factions will be rejected.
 
