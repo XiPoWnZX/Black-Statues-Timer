@@ -53,7 +53,7 @@ You can run the [Black Statues Chain Timer.exe](https://github.com/XiPoWnZX/Blac
 
 From now you are ready to use the timer!
 
-*If you want a manual installation continue*
+*If you want a manual installation continue and send me DM for non-redacted version*
 
 **2. Install Python (if you don't already have it)**
 
