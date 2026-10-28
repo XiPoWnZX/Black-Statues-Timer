@@ -49,7 +49,7 @@ The timer verifies that your character belongs to BLACK STATUES (Faction ID: 941
 
 Never share your API key with anyone.
 
-You can run the Black Statues Chain Timer.exe and enter your API key from here.
+You can run the [Black Statues Chain Timer.exe](https://github.com/XiPoWnZX/Black-Statues-Timer/blob/main/Black%20Statues%20Chain%20Timer.exe) and enter your API key from here.
 
 From now you are ready to use the timer!
 
