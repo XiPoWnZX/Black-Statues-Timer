@@ -36,6 +36,10 @@ Automatic 1-minute chain failsafe alert to a separate Discord channel, with a ro
 
 Automatic API polling on startup when a saved API key exists
 
+Vocal notification 20 hit before bonus
+
+Vocal + Sonor notification at 1 minute left of timer
+
 Online section with who use the application with you
 
 Private Faction Chat in the Online section
