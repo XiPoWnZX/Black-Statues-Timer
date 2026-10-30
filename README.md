@@ -6,6 +6,9 @@
 
 This is a private application for WINDOWS to always have the chain timer of Black Statues on your screen with multiple features.
 
+To download look on the left of for <img width="46" height="52" alt="image" src="https://github.com/user-attachments/assets/3e4a52a1-1c24-4371-b5aa-cbcd983261c2" />
+
+
 **Timer features**
 
 Live faction chain countdown
