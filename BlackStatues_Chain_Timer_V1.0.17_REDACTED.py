@@ -702,7 +702,7 @@ class ChainTimerApp:
         self.normal_help_button.grid(row=0, column=0, sticky="ew", padx=(0, 2))
         self.quick_attack_button = tk.Button(
             self.bottom_actions, text="QUICK ATTACK", command=self.trigger_quick_attack,
-            font=("Segoe UI", 9, "bold"), fg="white", bg="#80621f",
+            font=("Segoe UI", 9, "bold"), fg="white", bg="#287a4b",
             activebackground="#9a7727", activeforeground="white", relief="flat", bd=0,
             padx=5, pady=8, height=2, cursor="hand2"
         )
