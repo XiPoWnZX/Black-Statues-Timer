@@ -8,13 +8,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import random
+import uuid
 from datetime import datetime, timezone
 import tkinter as tk
 import webbrowser
 from tkinter import messagebox, simpledialog
 from pathlib import Path
-import uuid
 
 try:
     import winsound
@@ -55,19 +54,19 @@ DISCORD_WEBHOOK_URL = "----REDACTED----"
 ONE_MINUTE_FAILSAFE_WEBHOOK_URL = "----REDACTED----"
 #ID of role to PING
 ONE_MINUTE_FAILSAFE_ROLE_ID = "----REDACTED----"
-HELP_ROLE_ID = "626217573406474296"
 
 REQUEST_TIMEOUT = 10
 STALE_AFTER_SECONDS = 20
 UNCHANGED_AFTER_SECONDS = 60
 
 NORMAL_WIDTH = 390
-NORMAL_HEIGHT = 250
+NORMAL_HEIGHT = 280
 COMPACT_WIDTH = 180
-COMPACT_HEIGHT = 120
+COMPACT_HEIGHT = 110
 SCREEN_MARGIN = 10
 
 ALARM_START_SECONDS = 60
+TEST_MODE = False
 
 SLOW_BEEP_FREQUENCY = 1000
 SLOW_BEEP_DURATION_MS = 180
@@ -95,17 +94,10 @@ class ChainTimerApp:
         self.root.geometry(f"{NORMAL_WIDTH}x{NORMAL_HEIGHT}")
         self.root.resizable(False, False)
         self.root.attributes("-topmost", True)
+        self.root.attributes("-alpha", 0.85)
         self.root.configure(bg="#151515")
 
         self.config = self.load_config()
-        self.window_opacity = max(60, min(100, int(self.config.get("window_opacity", 85))))
-        self.root.attributes("-alpha", self.window_opacity / 100)
-        self.mute_audio_alerts = bool(self.config.get("mute_audio_alerts", False))
-        self.mute_audio_var = tk.BooleanVar(value=self.mute_audio_alerts)
-        self.discord_failsafe_disabled = bool(self.config.get("discord_failsafe_disabled", False))
-        self.discord_failsafe_var = tk.BooleanVar(value=self.discord_failsafe_disabled)
-        self.settings_window = None
-        self.settings_logs_button = None
         self.player_names = []
         self.player_entries = []
         self.player_name_widgets = []
@@ -134,7 +126,8 @@ class ChainTimerApp:
         self.chat_last_message_id = 0
 
         # Start with a 10:00 synchronization countdown so the UI is useful
-        # immediately while the first Torn API responses arrive.
+        # immediately while the first Torn API responses arrive. The first
+        # usable positive API timeout or confirmed hit replaces this grace timer.
         self.deadline_mono = time.monotonic() + STARTUP_SYNC_SECONDS
         self.deadline = time.time() + STARTUP_SYNC_SECONDS  # Wall-clock equivalent.
         self.startup_sync_pending = True
@@ -161,19 +154,11 @@ class ChainTimerApp:
         self.alarm_stop_event = threading.Event()
         self.alarm_thread = None
         self.alarm_lock = threading.Lock()
-        self.alarm_generation = 0
-        self.alarm_thread_generation = None
-
-        # Speech worker
-        self.speech_queue = queue.Queue()
-        self.speech_stop_event = threading.Event()
-        self.speech_thread = threading.Thread(
-            target=self.speech_worker, daemon=True, name="ChainTimerSpeech"
-        )
-        self.speech_thread.start()
         self.failure_sound_played = False
         self.expiry_handled = False
         self.one_minute_failsafe_sent = False
+        # Until Torn confirms the chain state, the startup countdown is only a
+        # synchronization grace period and must never trigger a false expiry.
         self.chain_state_unconfirmed = True
 
         self.speech_deadline = None
@@ -246,7 +231,7 @@ class ChainTimerApp:
         self.set_message("Sending Discord help alert...")
 
     def call_for_help_worker(self, webhook_url):
-        role_id = HELP_ROLE_ID
+        role_id = "626217573406474296"
         payload = {
             "content": f"<@&{role_id}> Help needed!",
             "allowed_mentions": {"parse": [], "roles": [role_id]}
@@ -271,9 +256,6 @@ class ChainTimerApp:
             ))
 
     def send_one_minute_failsafe(self):
-        if self.discord_failsafe_disabled:
-            self.set_message("1-minute Discord failsafe is disabled in Settings.")
-            return
         webhook_url = ONE_MINUTE_FAILSAFE_WEBHOOK_URL.strip()
         if not webhook_url.startswith(("https://discord.com/api/webhooks/",
                                        "https://discordapp.com/api/webhooks/")):
@@ -319,151 +301,6 @@ class ChainTimerApp:
         self.set_message("Verifying API key and faction membership...")
         self.key_validation_in_progress = True
         threading.Thread(target=self.validate_key_worker, args=(new_key,), daemon=True).start()
-
-    def open_settings_menu(self):
-        if self.settings_window is not None:
-            try:
-                if self.settings_window.winfo_exists():
-                    self.settings_window.deiconify()
-                    self.settings_window.lift()
-                    self.settings_window.focus_force()
-                    return
-            except tk.TclError:
-                pass
-
-        window = tk.Toplevel(self.root)
-        self.settings_window = window
-        window.title("Settings")
-        window.resizable(False, False)
-        window.configure(bg="#17191f")
-        window.attributes("-topmost", True)
-        window.transient(self.root)
-        window.protocol("WM_DELETE_WINDOW", self.close_settings_menu)
-        window.bind("<Configure>", self.keep_toplevel_on_screen, add="+")
-
-        panel = tk.Frame(window, bg="#17191f", padx=14, pady=12)
-        panel.pack(fill="both", expand=True)
-        tk.Label(panel, text="SETTINGS", font=("Segoe UI", 11, "bold"),
-                 fg="white", bg="#17191f").pack(fill="x", pady=(0, 10))
-
-        tk.Button(panel, text="API Key", command=self.open_settings,
-                  font=("Segoe UI", 9), fg="white", bg="#353944",
-                  activebackground="#505666", activeforeground="white",
-                  relief="flat", bd=0, padx=12, pady=7, cursor="hand2").pack(fill="x", pady=3)
-
-        self.settings_logs_button = tk.Button(
-            panel, text=("Hide API Logs" if self.logs_visible else "Show API Logs"),
-            command=self.toggle_logs, font=("Segoe UI", 9), fg="white", bg="#353944",
-            activebackground="#505666", activeforeground="white",
-            relief="flat", bd=0, padx=12, pady=7, cursor="hand2")
-        self.settings_logs_button.pack(fill="x", pady=3)
-
-        tk.Label(
-            panel, text="Window opacity (60–100%)",
-            font=("Segoe UI", 9, "bold"), fg="white", bg="#17191f", anchor="w"
-        ).pack(fill="x", pady=(12, 0))
-        self.opacity_value_label = tk.Label(
-            panel, text=f"{self.window_opacity}%", font=("Segoe UI", 8),
-            fg="#c5c8d0", bg="#17191f", anchor="e"
-        )
-        self.opacity_value_label.pack(fill="x")
-        self.opacity_scale = tk.Scale(
-            panel, from_=60, to=100, orient="horizontal", resolution=1,
-            showvalue=False, length=285, command=self.change_window_opacity,
-            bg="#17191f", fg="white", troughcolor="#353944",
-            activebackground="#8fc7ff", highlightthickness=0, bd=0
-        )
-        self.opacity_scale.set(self.window_opacity)
-        self.opacity_scale.pack(fill="x", pady=(0, 8))
-
-        tk.Checkbutton(
-            panel, text="Mute all audio alerts (beeps and spoken announcements)",
-            variable=self.mute_audio_var, command=self.toggle_mute_audio_setting,
-            font=("Segoe UI", 9, "bold"), fg="white", bg="#17191f",
-            activebackground="#17191f", activeforeground="white", selectcolor="#353944",
-            anchor="w", justify="left", wraplength=280
-        ).pack(fill="x", pady=(5, 3))
-
-        tk.Checkbutton(
-            panel, text="Disable Discord 1-minute failsafe",
-            variable=self.discord_failsafe_var, command=self.toggle_discord_failsafe_setting,
-            font=("Segoe UI", 9, "bold"), fg="white", bg="#17191f",
-            activebackground="#17191f", activeforeground="white", selectcolor="#353944",
-            anchor="w", justify="left", wraplength=280
-        ).pack(fill="x", pady=(10, 2))
-
-        tk.Label(
-            panel,
-            text=("Checked = no 1-minute Discord alert. Unchecked = alert is enabled. "
-                  "In TEST_MODE, the simulated countdown will send the real Discord role ping "
-                  "when it reaches 60 seconds if this box is unchecked."),
-            font=("Segoe UI", 8), fg="#e9b44c", bg="#17191f",
-            wraplength=285, justify="left", anchor="w"
-        ).pack(fill="x", pady=(0, 8))
-
-        tk.Button(panel, text="Close", command=self.close_settings_menu,
-                  font=("Segoe UI", 8), fg="#d7d9df", bg="#252831",
-                  activebackground="#3a3e49", activeforeground="white",
-                  relief="flat", bd=0, padx=10, pady=5, cursor="hand2").pack(fill="x", pady=(8, 0))
-
-        window.update_idletasks()
-        x = self.root.winfo_x() + max(0, self.root.winfo_width() - window.winfo_reqwidth())
-        y = self.root.winfo_y() + 35
-        window.geometry(f"+{x}+{y}")
-
-    def close_settings_menu(self):
-        if self.settings_window is not None:
-            try:
-                if self.settings_window.winfo_exists():
-                    self.settings_window.destroy()
-            except tk.TclError:
-                pass
-        self.settings_window = None
-        self.settings_logs_button = None
-
-    def change_window_opacity(self, value):
-        try:
-            percent = max(60, min(100, int(float(value))))
-            self.window_opacity = percent
-            self.root.attributes("-alpha", percent / 100)
-            if hasattr(self, "opacity_value_label"):
-                self.opacity_value_label.config(text=f"{percent}%")
-            self.config["window_opacity"] = percent
-            self.save_config()
-        except (tk.TclError, ValueError):
-            pass
-
-    def toggle_mute_audio_setting(self):
-        self.mute_audio_alerts = bool(self.mute_audio_var.get())
-        self.config["mute_audio_alerts"] = self.mute_audio_alerts
-        if not self.save_config():
-            self.mute_audio_alerts = not self.mute_audio_alerts
-            self.mute_audio_var.set(self.mute_audio_alerts)
-            return
-
-        if self.mute_audio_alerts:
-            self.stop_alarm()
-            try:
-                while True:
-                    self.speech_queue.get_nowait()
-                    self.speech_queue.task_done()
-            except queue.Empty:
-                pass
-            self.set_message("Audio alerts muted in Settings.")
-        else:
-            self.set_message("Audio alerts enabled in Settings.")
-
-    def toggle_discord_failsafe_setting(self):
-        self.discord_failsafe_disabled = bool(self.discord_failsafe_var.get())
-        self.config["discord_failsafe_disabled"] = self.discord_failsafe_disabled
-        if not self.save_config():
-            self.discord_failsafe_disabled = not self.discord_failsafe_disabled
-            self.discord_failsafe_var.set(self.discord_failsafe_disabled)
-            return
-        if self.discord_failsafe_disabled:
-            self.set_message("Discord 1-minute failsafe disabled in Settings.")
-        else:
-            self.set_message("Discord 1-minute failsafe enabled in Settings.")
 
     # --------------------------------------------------------
     # TORN API KEY VALIDATION
@@ -562,6 +399,18 @@ class ChainTimerApp:
         self.normal_lock_button.config(text=text, bg=bg, activebackground=active_bg)
         self.compact_lock_button.config(text=text, bg=bg, activebackground=active_bg)
 
+    def toggle_transparency(self):
+        current_alpha = float(self.root.attributes("-alpha"))
+        current_percent = max(60, min(100, round(current_alpha * 100)))
+        selected_percent = simpledialog.askinteger(
+            "Window Transparency", "Choose window opacity (60–100):",
+            initialvalue=current_percent, minvalue=60, maxvalue=100, parent=self.root
+        )
+        if selected_percent is None:
+            return
+        self.root.attributes("-alpha", selected_percent / 100)
+        self.transparency_button.config(text=f"{selected_percent}%")
+
     # --------------------------------------------------------
     # USER INTERFACE
     # --------------------------------------------------------
@@ -585,14 +434,14 @@ class ChainTimerApp:
             relief="flat", bd=0, width=3, padx=0, pady=0, cursor="hand2"
         )
         self.normal_lock_button.pack(side="top", anchor="e")
-        self.normal_settings_button = tk.Button(
-            normal_top_controls, text="⚙", command=self.open_settings_menu,
-            font=("Segoe UI Emoji", 9), fg="white", bg="#353944",
-            activebackground="#505666", activeforeground="white",
-            relief="flat", bd=0, width=3, padx=0, pady=0, cursor="hand2"
+        self.transparency_button = tk.Button(
+            normal_top_controls, text="85%", command=self.toggle_transparency, font=("Segoe UI", 7, "bold"),
+            fg="white", bg="#353944", activebackground="#505666", activeforeground="white",
+            relief="flat", bd=0, width=4, padx=0, pady=1, cursor="hand2"
         )
-        self.normal_settings_button.pack(side="top", anchor="e", pady=(2, 0))
-
+        self.transparency_button.pack(side="top", anchor="e", pady=(2, 0))
+        # Normal window only: center the chain timer and hit count in two columns.
+        # The compact window deliberately keeps its original single countdown.
         self.countdowns_row = tk.Frame(self.normal_frame, bg=bg)
         self.countdowns_row.pack(fill="x", pady=(3, 2))
         self.countdowns_row.grid_columnconfigure(0, weight=1, uniform="countdown")
@@ -624,12 +473,15 @@ class ChainTimerApp:
         )
         self.chain_hits_label.pack(fill="x")
 
+        # Milestone warning centered below BOTH the timer and chain-hit count.
+        # It is packed only while the current count is within 20 hits of a milestone.
         self.chain_milestone_warning_label = tk.Label(
             self.normal_frame, text="", font=("Segoe UI", 9, "bold"),
             fg="#ff6b6b", bg=bg, anchor="center", justify="center"
         )
         self.chain_milestone_warning_visible = False
 
+        # Keep API logs hidden at startup; users can reveal them with the toggle button.
         self.logs_visible = False
         self.diagnostics_frame = tk.Frame(self.normal_frame, bg=bg)
         self.status_label = tk.Label(
@@ -676,6 +528,7 @@ class ChainTimerApp:
         button_frame = tk.Frame(self.normal_frame, bg=bg)
         button_frame.pack(fill="x", pady=(1, 0))
         for text, command in [
+            ("API Key", self.open_settings),
             ("Small Countdown", self.toggle_countdown_mode),
             ("Start", self.start_polling),
             ("Stop", self.stop_polling),
@@ -687,27 +540,20 @@ class ChainTimerApp:
                 fg="white", bg="#353944", activebackground="#505666", activeforeground="white",
                 relief="flat", bd=0, padx=3, pady=4, cursor="hand2"
             ).pack(side="left", expand=True, fill="x", padx=2)
-        
-        # Dual Bottom Action Panel (CALL FOR HELP & QUICK ATTACK)
-        self.bottom_actions = tk.Frame(self.normal_frame, bg=bg)
-        self.bottom_actions.pack(side="bottom", fill="x", pady=(3, 0))
-        self.bottom_actions.grid_columnconfigure(0, weight=1, uniform="bottom_actions")
-        self.bottom_actions.grid_columnconfigure(1, weight=1, uniform="bottom_actions")
+        self.logs_toggle_button = tk.Button(
+            self.normal_frame, text="Show API Logs", width=12, command=self.toggle_logs,
+            font=("Segoe UI", 8, "bold"), fg="white", bg="#353944",
+            activebackground="#505666", activeforeground="white", relief="flat", bd=0,
+            padx=0, pady=3, cursor="hand2"
+        )
+        self.logs_toggle_button.pack(anchor="center", pady=(3, 0))
         self.normal_help_button = tk.Button(
-            self.bottom_actions, text="CALL FOR HELP", command=self.call_for_help,
-            font=("Segoe UI", 9, "bold"), fg="white", bg="#a83232",
+            self.normal_frame, text="CALL FOR HELP", command=self.call_for_help,
+            font=("Segoe UI", 10, "bold"), fg="white", bg="#a83232",
             activebackground="#c74444", activeforeground="white", relief="flat", bd=0,
-            padx=5, pady=8, height=2, cursor="hand2"
+            padx=8, pady=8, height=2, cursor="hand2"
         )
-        self.normal_help_button.grid(row=0, column=0, sticky="ew", padx=(0, 2))
-        self.quick_attack_button = tk.Button(
-            self.bottom_actions, text="QUICK ATTACK", command=self.trigger_quick_attack,
-            font=("Segoe UI", 9, "bold"), fg="white", bg="#80621f",
-            activebackground="#9a7727", activeforeground="white", relief="flat", bd=0,
-            padx=5, pady=8, height=2, cursor="hand2"
-        )
-        self.quick_attack_button.grid(row=0, column=1, sticky="ew", padx=(2, 0))
-
+        self.normal_help_button.pack(side="bottom", fill="x", expand=False, pady=(2, 0))
         self.compact_frame = tk.Frame(self.root, bg=bg, padx=6, pady=3)
         compact_top = tk.Frame(self.compact_frame, bg=bg)
         compact_top.pack(fill="x")
@@ -717,21 +563,12 @@ class ChainTimerApp:
             relief="flat", bd=0, width=2, padx=0, pady=0, cursor="hand2"
         )
         self.expand_button.pack(side="left")
-        compact_right_controls = tk.Frame(compact_top, bg=bg)
-        compact_right_controls.pack(side="right", anchor="e")
         self.compact_lock_button = tk.Button(
-            compact_right_controls, text="🔓", command=self.toggle_lock, font=("Segoe UI Emoji", 8),
+            compact_top, text="🔓", command=self.toggle_lock, font=("Segoe UI Emoji", 8),
             fg="white", bg="#353944", activebackground="#505666", activeforeground="white",
             relief="flat", bd=0, width=3, padx=0, pady=0, cursor="hand2"
         )
-        self.compact_lock_button.pack(side="top", anchor="e")
-        self.compact_settings_button = tk.Button(
-            compact_right_controls, text="⚙", command=self.open_settings_menu,
-            font=("Segoe UI Symbol", 8), fg="white", bg="#353944",
-            activebackground="#505666", activeforeground="white",
-            relief="flat", bd=0, width=3, padx=0, pady=0, cursor="hand2"
-        )
-        self.compact_settings_button.pack(side="top", anchor="e", pady=(1, 0))
+        self.compact_lock_button.pack(side="right")
         self.compact_title = tk.Label(
             compact_top, text=APP_NAME, font=("Segoe UI", 8, "bold"),
             fg="white", bg=bg, anchor="center"
@@ -758,7 +595,7 @@ class ChainTimerApp:
             self.chain_count_column, self.chain_count_heading, self.chain_hits_label,
             self.chain_milestone_warning_label, self.diagnostics_frame, self.status_label, self.normal_stale_label, self.normal_unchanged_label,
             self.players_row, self.players_content, self.players_heading, self.players_label,
-            self.bottom_actions, self.normal_help_button, self.quick_attack_button,
+            self.logs_toggle_button,
             self.compact_frame, compact_top, self.compact_title, self.compact_timer_label,
             self.compact_stale_label, self.compact_unchanged_label
         ]
@@ -772,21 +609,18 @@ class ChainTimerApp:
     # --------------------------------------------------------
 
     def toggle_logs(self):
+        """Show or hide API status messages and diagnostic warnings in normal mode."""
         if self.compact_mode:
-            self.toggle_countdown_mode()
+            return
         if self.logs_visible:
             self.diagnostics_frame.pack_forget()
             self.logs_visible = False
+            self.logs_toggle_button.config(text="Show API Logs")
         else:
+            # Reinsert diagnostics after the countdown and before the players row.
             self.diagnostics_frame.pack(fill="x", pady=(0, 3), before=self.players_row)
             self.logs_visible = True
-        log_button_text = "Hide API Logs" if self.logs_visible else "Show API Logs"
-        if self.settings_logs_button is not None:
-            try:
-                if self.settings_logs_button.winfo_exists():
-                    self.settings_logs_button.config(text=log_button_text)
-            except tk.TclError:
-                pass
+            self.logs_toggle_button.config(text="Hide API Logs")
         self.root.update_idletasks()
         required_height = self.normal_frame.winfo_reqheight()
         normal_height = max(235, required_height + 10)
@@ -808,285 +642,25 @@ class ChainTimerApp:
             normal_height = max(NORMAL_HEIGHT, required_height) + 10
             self.position_top_right(NORMAL_WIDTH, normal_height)
             self.root.attributes("-topmost", True)
+            current_percent = round(float(self.root.attributes("-alpha")) * 100)
+            self.transparency_button.config(text=f"{current_percent}%")
             self.update_lock_buttons()
-
-    def get_native_window_handle(self):
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            child_hwnd = wintypes.HWND(self.root.winfo_id())
-            get_ancestor = user32.GetAncestor
-            get_ancestor.argtypes = [wintypes.HWND, wintypes.UINT]
-            get_ancestor.restype = wintypes.HWND
-            root_hwnd = get_ancestor(child_hwnd, 2)
-            handle = getattr(root_hwnd, "value", root_hwnd)
-            if handle:
-                return int(handle)
-            child_value = getattr(child_hwnd, "value", child_hwnd)
-            return int(child_value) if child_value else None
-        except Exception:
-            return None
-
-    def get_native_window_rect(self):
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            handle = self.get_native_window_handle()
-            if not handle:
-                return None
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            rect = wintypes.RECT()
-            get_window_rect = user32.GetWindowRect
-            get_window_rect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-            get_window_rect.restype = wintypes.BOOL
-            if get_window_rect(wintypes.HWND(handle), ctypes.byref(rect)):
-                return int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)
-        except Exception:
-            pass
-        return None
-
-    def get_native_dpi_coordinate_scale(self, handle):
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            get_context = user32.GetWindowDpiAwarenessContext
-            get_context.argtypes = [wintypes.HWND]
-            get_context.restype = ctypes.c_void_p
-            get_awareness = user32.GetAwarenessFromDpiAwarenessContext
-            get_awareness.argtypes = [ctypes.c_void_p]
-            get_awareness.restype = ctypes.c_int
-
-            awareness = int(get_awareness(get_context(wintypes.HWND(handle))))
-            if awareness == 0:
-                set_context = user32.SetThreadDpiAwarenessContext
-                set_context.argtypes = [ctypes.c_void_p]
-                set_context.restype = ctypes.c_void_p
-                get_dpi = user32.GetDpiForSystem
-                get_dpi.argtypes = []
-                get_dpi.restype = wintypes.UINT
-
-                previous_context = set_context(ctypes.c_void_p(-2))
-                try:
-                    dpi = int(get_dpi())
-                finally:
-                    if previous_context:
-                        set_context(previous_context)
-                if dpi > 0:
-                    return dpi / 96.0
-        except Exception:
-            pass
-        return 1.0
-
-    def get_native_visible_rect(self):
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            handle = self.get_native_window_handle()
-            if not handle:
-                return self.get_native_window_rect()
-
-            dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
-            rect = wintypes.RECT()
-            get_bounds = dwmapi.DwmGetWindowAttribute
-            get_bounds.argtypes = [
-                wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD
-            ]
-            get_bounds.restype = ctypes.c_long
-
-            result = get_bounds(
-                wintypes.HWND(handle), 9, ctypes.byref(rect), ctypes.sizeof(rect)
-            )
-            if result == 0:
-                scale = self.get_native_dpi_coordinate_scale(handle)
-                return (
-                    round(int(rect.left) / scale),
-                    round(int(rect.top) / scale),
-                    round(int(rect.right) / scale),
-                    round(int(rect.bottom) / scale),
-                )
-        except Exception:
-            pass
-        return self.get_native_window_rect()
-
-    def get_native_titlebar_height(self):
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            handle = self.get_native_window_handle()
-            if not handle:
-                return 32
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            hwnd = wintypes.HWND(handle)
-            rect = wintypes.RECT()
-            client_origin = wintypes.POINT(0, 0)
-
-            get_window_rect = user32.GetWindowRect
-            get_window_rect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-            get_window_rect.restype = wintypes.BOOL
-            client_to_screen = user32.ClientToScreen
-            client_to_screen.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.POINT)]
-            client_to_screen.restype = wintypes.BOOL
-
-            if get_window_rect(hwnd, ctypes.byref(rect)) and client_to_screen(hwnd, ctypes.byref(client_origin)):
-                height = int(client_origin.y - rect.top)
-                if 0 < height <= 100:
-                    return height
-        except Exception:
-            pass
-        return 32
-
-    def move_native_window(self, x, y):
-        try:
-            import ctypes
-            from ctypes import wintypes
-
-            handle = self.get_native_window_handle()
-            if not handle:
-                return False
-            user32 = ctypes.WinDLL("user32", use_last_error=True)
-            set_window_pos = user32.SetWindowPos
-            set_window_pos.argtypes = [
-                wintypes.HWND, wintypes.HWND,
-                ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
-                wintypes.UINT
-            ]
-            set_window_pos.restype = wintypes.BOOL
-            flags = 0x0001 | 0x0004 | 0x0010
-            return bool(set_window_pos(
-                wintypes.HWND(handle), wintypes.HWND(0),
-                int(x), int(y), 0, 0, flags
-            ))
-        except Exception:
-            return False
 
     def start_drag(self, event):
         if self.locked:
             return
-
-        native_rect = self.get_native_window_rect()
-        if native_rect is not None:
-            native_left, native_top, _native_right, _native_bottom = native_rect
-            self.drag_x = event.x_root - native_left
-            self.drag_y = event.y_root - native_top
-            self.drag_native_mode = True
-        else:
-            self.drag_x = event.x_root - self.root.winfo_x()
-            self.drag_y = event.y_root - self.root.winfo_y()
-            self.drag_native_mode = False
-
-    def get_virtual_screen_bounds(self):
-        return 0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-
-    def keep_toplevel_on_screen(self, event):
-        window = event.widget
-        if window is self.root:
-            return
-        try:
-            if not window.winfo_exists() or not window.winfo_viewable():
-                return
-
-            x = window.winfo_x()
-            y = window.winfo_y()
-            width = max(1, window.winfo_width())
-            height = max(1, window.winfo_height())
-            screen_left, screen_top, screen_width, screen_height = self.get_virtual_screen_bounds()
-
-            max_x = screen_left + max(0, screen_width - width)
-            max_y = screen_top + max(0, screen_height - height)
-            bounded_x = min(max(x, screen_left), max_x)
-            bounded_y = min(max(y, screen_top), max_y)
-
-            if bounded_x != x or bounded_y != y:
-                window.geometry(f"{bounded_x:+d}{bounded_y:+d}")
-        except tk.TclError:
-            pass
+        self.drag_x = event.x_root - self.root.winfo_x()
+        self.drag_y = event.y_root - self.root.winfo_y()
 
     def drag_window(self, event):
         if self.locked:
             return
-
-        screen_left, screen_top, screen_width, screen_height = self.get_virtual_screen_bounds()
-        screen_right = screen_left + screen_width
-        screen_bottom = screen_top + screen_height
-
-        native_rect = self.get_native_window_rect()
-        if native_rect is not None and getattr(self, "drag_native_mode", False):
-            native_left, native_top, native_right, native_bottom = native_rect
-            native_width = max(1, native_right - native_left)
-            native_height = max(1, native_bottom - native_top)
-
-            requested_left = event.x_root - self.drag_x
-            requested_top = event.y_root - self.drag_y
-
-            visible_rect = self.get_native_visible_rect()
-            if visible_rect is not None:
-                visible_left, _visible_top, visible_right, visible_bottom = visible_rect
-                left_inset = max(0, visible_left - native_left)
-                right_inset = max(0, native_right - visible_right)
-                bottom_inset = max(0, native_bottom - visible_bottom)
-            else:
-                left_inset = right_inset = bottom_inset = 0
-
-            min_left = screen_left - left_inset
-            max_left = screen_right - native_width + right_inset
-            if max_left < min_left:
-                max_left = min_left
-            bounded_left = min(max(requested_left, min_left), max_left)
-
-            titlebar_height = self.get_native_titlebar_height()
-            min_top = screen_top - titlebar_height
-            max_top = screen_bottom - native_height + bottom_inset
-            if max_top < min_top:
-                min_top = max_top
-            bounded_top = min(max(requested_top, min_top), max_top)
-
-            self.move_native_window(bounded_left, bounded_top)
-            return
-
         x = event.x_root - self.drag_x
         y = event.y_root - self.drag_y
-        self.root.update_idletasks()
-        window_width = max(1, self.root.winfo_width())
-        window_height = max(1, self.root.winfo_height())
-        titlebar_height = self.get_native_titlebar_height()
-        min_x = screen_left
-        max_x = max(min_x, screen_right - window_width)
-        min_y = screen_top - titlebar_height
-        max_y = screen_bottom - window_height
-        if max_y < min_y:
-            min_y = max_y
-        x = min(max(x, min_x), max_x)
-        y = min(max(y, min_y), max_y)
-        self.root.geometry(f"{x:+d}{y:+d}")
+        self.root.geometry(f"+{x}+{y}")
 
     # --------------------------------------------------------
-    # QUICK ATTACK FUNCTION
-    # --------------------------------------------------------
-
-    def trigger_quick_attack(self):
-        """Directly generate a random target ID and open the Torn attack page in the default browser."""
-        NO_API_MIN_ID = 4200000
-        NO_API_MAX_ID = 4550000
-        random_id = random.randint(NO_API_MIN_ID, NO_API_MAX_ID)
-        attack_url = f"https://www.torn.com/page.php?sid=attack&user2ID={random_id}"
-        
-        try:
-            webbrowser.open(attack_url)
-            self.set_message(f"QUICK ATTACK: Opened attack page for ID {random_id}.")
-        except Exception as exc:
-            self.set_message(f"QUICK ATTACK failed: {exc}")
-            messagebox.showerror("QUICK ATTACK", f"Could not open browser:\n\n{exc}", parent=self.root)
-
-
-    # --------------------------------------------------------
-    # PLAYER LIST & ON DUTY INTEGRATION
+    # GOOGLE SHEETS PLAYER NAMES
     # --------------------------------------------------------
 
     def open_torn_profile(self, player_id):
@@ -1227,6 +801,7 @@ class ChainTimerApp:
     # --------------------------------------------------------
 
     def start_online_presence(self):
+        """Start a background heartbeat loop for this timer instance."""
         if self.online_presence_thread and self.online_presence_thread.is_alive():
             return
         self.online_presence_stop_event.clear()
@@ -1236,10 +811,16 @@ class ChainTimerApp:
         self.online_presence_thread.start()
 
     def fetch_online_identity(self, api_key):
+        """Resolve the identity belonging to the API key currently configured in this timer.
+
+        Do not hard-code a player ID or name here: each faction member runs their own
+        copy of the timer, and the heartbeat must represent the owner of that API key.
+        """
         api_key = str(api_key or "").strip()
         if not api_key:
             raise ValueError("Enter a Torn API key before enabling Online presence.")
 
+        # Torn's v1 user/basic response includes player_id and name for the key owner.
         params = urllib.parse.urlencode({
             "selections": "basic",
             "key": api_key,
@@ -1261,16 +842,23 @@ class ChainTimerApp:
         if "error" in data:
             error = data["error"]
             if isinstance(error, dict):
-                raise ValueError(f"Torn identity lookup error {error.get('code', '?')}: {error.get('error', 'Unknown error')}")
+                raise ValueError(
+                    f"Torn identity lookup error {error.get('code', '?')}: "
+                    f"{error.get('error', 'Unknown error')}"
+                )
             raise ValueError(str(error))
 
         player_id = str(data.get("player_id") or data.get("playerid") or data.get("id") or "").strip()
         player_name = str(data.get("name") or "").strip()
         if not player_id.isdigit() or int(player_id) <= 0 or not player_name:
-            raise ValueError("Torn did not return the player ID and name for this API key.")
+            raise ValueError(
+                "Torn did not return the player ID and name for this API key. "
+                "Check that the key has access to the user basic selection."
+            )
         return {"id": player_id, "name": player_name}
 
     def presence_request(self, action, extra_params=None, timeout=REQUEST_TIMEOUT):
+        """Call the protected Apps Script endpoint for an Online presence action."""
         url = PLAYERS_WEB_APP_URL.strip()
         token = PLAYERS_API_TOKEN.strip()
         if not url.startswith("https://script.google.com/macros/s/") or not token:
@@ -1296,6 +884,7 @@ class ChainTimerApp:
         return data
 
     def online_presence_worker(self):
+        """Send a heartbeat every 30 seconds; retry identity lookup at a relaxed cadence."""
         current_key = None
         identity = None
         next_identity_retry = 0.0
@@ -1324,6 +913,7 @@ class ChainTimerApp:
                     self.online_identity = identity
                     next_heartbeat = 0.0
                 except Exception as exc:
+                    # Show the actual cause in the Online window; retry without affecting countdown.
                     self.result_queue.put(("online_presence_status", f"Identity lookup failed: {exc}"))
                     next_identity_retry = time.monotonic() + 30.0
 
@@ -1338,20 +928,36 @@ class ChainTimerApp:
                         },
                         timeout=REQUEST_TIMEOUT,
                     )
+                    # Do not report success just because the endpoint returned valid JSON.
+                    # Verify that the deployed Apps Script actually handled the heartbeat.
                     if heartbeat_result.get("action") != "heartbeat":
-                        raise ValueError("Apps Script did not confirm a heartbeat.")
+                        raise ValueError(
+                            "Apps Script did not confirm a heartbeat. Response: "
+                            + json.dumps(heartbeat_result, ensure_ascii=False)[:500]
+                        )
                     server_last_seen = heartbeat_result.get("last_seen")
                     if not server_last_seen:
-                        raise ValueError("Apps Script confirmed no heartbeat timestamp.")
+                        raise ValueError(
+                            "Apps Script confirmed no heartbeat timestamp. Response: "
+                            + json.dumps(heartbeat_result, ensure_ascii=False)[:500]
+                        )
                 except Exception as exc:
+                    # The next heartbeat retries; the 90-second server-side window
+                    # naturally expires a disconnected or unreachable timer.
                     self.result_queue.put(("online_presence_status", f"Heartbeat failed: {exc}"))
                 else:
-                    self.result_queue.put(("online_presence_status", f"Heartbeat confirmed at {time.strftime('%H:%M:%S')}"))
+                    self.result_queue.put((
+                        "online_presence_status",
+                        f"Heartbeat confirmed at {time.strftime('%H:%M:%S')} local time | "
+                        f"ID {identity['id']} | client {self.online_client_id[:8]} | "
+                        f"server ms {server_last_seen}"
+                    ))
                 next_heartbeat = time.monotonic() + ONLINE_HEARTBEAT_INTERVAL
 
             self.online_presence_stop_event.wait(2)
 
     def open_online_window(self):
+        """Open the combined live chat and online-timers window."""
         try:
             if self.online_window is not None and self.online_window.winfo_exists():
                 self.online_window.deiconify()
@@ -1364,6 +970,7 @@ class ChainTimerApp:
 
         window = tk.Toplevel(self.root)
         self.online_window = window
+        # Chat and online presence now live together in one resizable window.
         self.chat_window = window
         window.title("Black Statues — Live Chat & Online")
         window.geometry("820x540")
@@ -1371,7 +978,6 @@ class ChainTimerApp:
         window.configure(bg="#17191f")
         window.attributes("-topmost", True)
         window.protocol("WM_DELETE_WINDOW", self.close_online_window)
-        window.bind("<Configure>", self.keep_toplevel_on_screen, add="+")
 
         header = tk.Frame(window, bg="#17191f", padx=14, pady=10)
         header.pack(fill="x")
@@ -1393,6 +999,8 @@ class ChainTimerApp:
         tk.Label(controls, text="Online list refreshes every 15 seconds · chat every 5 seconds",
                  font=("Segoe UI", 8), fg="#aeb8c8", bg="#17191f").pack(side="right")
 
+        # Main area expands/shrinks with the window. Chat takes most of the width;
+        # online players stay in a narrower panel on the right.
         content = tk.Frame(window, bg="#17191f", padx=12, pady=0)
         content.pack(fill="both", expand=True)
         content.grid_rowconfigure(0, weight=1)
@@ -1413,6 +1021,8 @@ class ChainTimerApp:
         tk.Label(chat_heading, text="● LIVE", font=("Segoe UI", 8, "bold"),
                  fg="#63e68b", bg="#20242c").pack(side="right")
 
+        # Pack the composer at the bottom BEFORE the expanding message area so it
+        # remains visible even when the window is short or resized smaller.
         composer = tk.Frame(chat_panel, bg="#20242c", padx=8, pady=8)
         composer.pack(side="bottom", fill="x")
         self.chat_status_label = tk.Label(composer, text="Connecting to shared chat…",
@@ -1464,8 +1074,11 @@ class ChainTimerApp:
         self.online_list_frame.bind(
             "<Configure>", lambda _event: online_canvas.configure(scrollregion=online_canvas.bbox("all"))
         )
-        online_canvas_window = online_canvas.create_window((0, 0), window=self.online_list_frame, anchor="nw")
-        online_canvas.bind("<Configure>", lambda event: online_canvas.itemconfigure(online_canvas_window, width=event.width))
+        online_canvas_window = online_canvas.create_window((0, 0), window=self.online_list_frame,
+                                                           anchor="nw")
+        online_canvas.bind("<Configure>", lambda event: online_canvas.itemconfigure(
+            online_canvas_window, width=event.width
+        ))
         online_canvas.configure(yscrollcommand=online_scroll.set)
         online_canvas.pack(side="left", fill="both", expand=True)
         online_scroll.pack(side="right", fill="y")
@@ -1477,6 +1090,7 @@ class ChainTimerApp:
         self.chat_entry.focus_set()
 
     def close_online_window(self):
+        """Close the combined chat/online window and cancel both refresh loops."""
         for attr in ("online_refresh_after_id", "chat_refresh_after_id"):
             after_id = getattr(self, attr, None)
             if after_id is not None:
@@ -1541,6 +1155,9 @@ class ChainTimerApp:
             if self.online_window is None or not self.online_window.winfo_exists():
                 return
 
+            # Show each Torn player exactly once, even if multiple timer
+            # instances (and therefore multiple client IDs) are sending heartbeats.
+            # Keep the most recent heartbeat for that player.
             latest_by_player = {}
             for player in online if isinstance(online, list) else []:
                 if not isinstance(player, dict):
@@ -1652,6 +1269,7 @@ class ChainTimerApp:
                 timeout=4,
             )
         except Exception:
+            # If the endpoint is unreachable, the row ages out after 90 seconds.
             pass
 
     # --------------------------------------------------------
@@ -1659,9 +1277,11 @@ class ChainTimerApp:
     # --------------------------------------------------------
 
     def open_chat_window(self):
+        """Compatibility alias: chat is now embedded in the Online window."""
         self.open_online_window()
 
     def close_chat_window(self):
+        """Compatibility alias: closing chat closes the combined Online window."""
         self.close_online_window()
 
     def schedule_chat_refresh(self):
@@ -1713,7 +1333,7 @@ class ChainTimerApp:
         identity = self.online_identity
         if not isinstance(identity, dict) or not identity.get("id") or not identity.get("name"):
             if self.chat_status_label is not None:
-                self.chat_status_label.config(text="Waiting for Torn identity lookup.", fg="#ffbf69")
+                self.chat_status_label.config(text="Waiting for Torn identity lookup. Check that your API key has user → basic access.", fg="#ffbf69")
             return
         self.chat_entry.delete(0, "end")
         self.chat_entry.config(state="disabled")
@@ -1724,6 +1344,12 @@ class ChainTimerApp:
         threading.Thread(target=self.chat_request_worker, args=("chat_send", params), daemon=True).start()
 
     def update_chat_messages(self, messages):
+        """Render shared chat messages using the numeric Unix-ms timestamp when available.
+
+        The numeric timestamp is authoritative. It avoids displaying spreadsheet/date
+        serial values such as Sat Dec 30 1899 when the Apps Script's formatted `time`
+        field is stale or incorrectly converted. All displayed timestamps use UTC.
+        """
         if self.chat_text is None:
             return
         try:
@@ -1738,12 +1364,15 @@ class ChainTimerApp:
                 sender = str(item.get("name") or "Unknown")
                 message = str(item.get("message") or "")
 
+                # Apps Script stores Date.now() in milliseconds. Prefer that raw
+                # numeric value over `time`, which may come from an old deployment.
                 timestamp = ""
                 raw_timestamp = item.get("timestamp")
                 try:
                     if raw_timestamp is not None and str(raw_timestamp).strip() != "":
                         numeric_timestamp = float(raw_timestamp)
                         if math.isfinite(numeric_timestamp) and numeric_timestamp > 0:
+                            # Also tolerate Unix seconds if an older endpoint sends seconds.
                             if numeric_timestamp < 100_000_000_000:
                                 numeric_timestamp *= 1000
                             timestamp = datetime.fromtimestamp(
@@ -1752,6 +1381,7 @@ class ChainTimerApp:
                 except (TypeError, ValueError, OverflowError, OSError):
                     timestamp = ""
 
+                # Compatibility fallback for older deployments without `timestamp`.
                 if not timestamp:
                     timestamp = str(item.get("time") or "")
 
@@ -1783,12 +1413,17 @@ class ChainTimerApp:
     def fetch_chain_data(self):
         api_key = self.config.get("api_key", "").strip()
         if not api_key:
-            raise ValueError("No API key. Open Settings and choose API Key to add it.")
+            raise ValueError("No API key. Click API Key to add it.")
         if self.validated_api_key != api_key:
             faction = self.validate_api_key(api_key)
             self.validated_api_key = api_key
             self.result_queue.put(("status", f"Verified faction: {faction['name']} (ID {faction['id']})."))
         request_started_mono = time.monotonic()
+        # Use Torn's dedicated v2 chain endpoint as the authoritative live source.
+        # The previous v1 endpoint was returning a count behind the in-game chain.
+        # Torn API v2 uses the canonical /faction/chain route and an `id`
+        # query parameter for a specific faction. The /faction/{id}/chain path
+        # is not the documented v2 route and can yield stale/unexpected data.
         params = urllib.parse.urlencode({
             "key": api_key,
             "id": str(FACTION_ID),
@@ -1843,11 +1478,15 @@ class ChainTimerApp:
 
         raw_chain_current = current_value
 
+        # Read faction attacks from the API v2 endpoint. The older v1 request
+        # (api.torn.com/faction/9412?selections=attacks) can fail with a key-access
+        # error even when the custom key has the API-v2 faction -> attacks selection.
         latest_success_timestamp = None
         latest_success_chain = None
         attacks_max_chain = None
         attacks_error = None
         try:
+            # Use the documented v2 faction-attacks route with explicit faction ID.
             attack_params = urllib.parse.urlencode({
                 "key": api_key,
                 "id": str(FACTION_ID),
@@ -1876,6 +1515,8 @@ class ChainTimerApp:
                     attacks_error = str(err)
             else:
                 attacks = attack_data.get("attacks", [])
+                # API v2 normally returns a list; accept a dictionary too, in case
+                # Torn changes/serves a keyed representation.
                 if isinstance(attacks, dict):
                     attack_items = list(attacks.values())
                 elif isinstance(attacks, list):
@@ -1890,6 +1531,8 @@ class ChainTimerApp:
                         continue
                     try:
                         chain_number = int(attack.get("chain") or 0)
+                        # API v2 fields are 'ended' and 'started'; API v1 used
+                        # 'timestamp_ended' and 'timestamp_started'.
                         ended = int(
                             attack.get("ended")
                             or attack.get("timestamp_ended")
@@ -1911,6 +1554,8 @@ class ChainTimerApp:
                     attacks_error = "API v2 returned no qualifying chain attacks."
 
         except urllib.error.HTTPError as exc:
+            # Include Torn's response body when available; it often explains whether
+            # the key is missing a selection or the endpoint/parameters are invalid.
             try:
                 body = exc.read().decode("utf-8", errors="replace")[:300]
             except Exception:
@@ -1919,6 +1564,8 @@ class ChainTimerApp:
         except Exception as exc:
             attacks_error = str(exc)
 
+        # Reconcile the live v2 chain.current value against the highest
+        # successful attack count observed since this chain began.
         if attacks_max_chain is not None:
             if current_value is None or attacks_max_chain > current_value:
                 current_value = attacks_max_chain
@@ -2060,19 +1707,36 @@ class ChainTimerApp:
             self.one_minute_failsafe_sent = False
 
     def apply_api_timeout(self, result):
+        """Synchronize from chain.timeout using a monotonic clock.
+
+        API latency is accounted for by subtracting the time spent waiting for
+        the response. Every successful poll updates the deadline, even when the
+        timeout number is unchanged, preventing stale deadlines.
+        """
         received_mono = result.get("response_received_mono", time.monotonic())
         timeout_value = float(result["timeout"])
         current_value = result.get("current")
         now_mono = time.monotonic()
+        # Preserve the time of the previous successful API report before updating it.
+        # If the chain count has increased, the hit happened sometime between that
+        # previous report and this detection, so account for that whole interval.
         previous_api_report_mono = self.last_success_monotonic
         self.last_success_monotonic = now_mono
         self.last_api_timeout_received = timeout_value
         self.last_api_end_received = None
 
+        # Detect a new successful hit by the chain counter increasing.
+        # Torn can return an older cached chain.current value after a newer one.
+        # Never let such a lower report roll the displayed counter backwards or
+        # replace the highest count already observed during the active chain.
+        # The counter may reset only when the API confirms the chain is inactive
+        # (timeout == 0); otherwise keep the higher observed count.
         previous_chain_current = self.last_chain_current
         chain_start = result.get("chain_start")
         if isinstance(chain_start, (int, float)) and chain_start > 0:
             if self.last_chain_start is not None and chain_start != self.last_chain_start:
+                # A different chain has started; do not carry the prior chain's
+                # hit count or attack timestamp into the new chain.
                 self.last_chain_current = None
                 self.last_success_attack_timestamp = None
                 self.last_success_attack_chain = None
@@ -2083,6 +1747,8 @@ class ChainTimerApp:
         latest_attack_chain = result.get("latest_success_chain")
         previous_attack_ts = self.last_success_attack_timestamp
 
+        # Prefer the timestamped faction-attacks feed: it can detect the latest
+        # successful hit even when chain.current skips several intermediate counts.
         attack_age_for_validation = (
             max(0.0, time.time() - float(latest_attack_ts))
             if isinstance(latest_attack_ts, (int, float)) and latest_attack_ts > 0
@@ -2097,6 +1763,8 @@ class ChainTimerApp:
             and attack_age_for_validation <= CHAIN_TIMEOUT_SECONDS
             and float(latest_attack_ts) <= time.time() + 5.0
         )
+        # On first startup, establish a baseline without treating an old attack
+        # already present in the feed as a newly detected hit.
         if self.last_success_attack_timestamp is None and isinstance(latest_attack_ts, (int, float)) and latest_attack_ts > 0:
             self.last_success_attack_timestamp = latest_attack_ts
             self.last_success_attack_chain = latest_attack_chain
@@ -2110,6 +1778,7 @@ class ChainTimerApp:
             and current_value > previous_chain_current
         )
         hit_detected = attack_timestamp_is_new or count_increased
+        # Zero timeout without a new count/timestamp is ambiguous, not proof of expiry.
         self.chain_state_unconfirmed = bool(timeout_value <= 0 and not hit_detected)
         if hit_detected or timeout_value > 0:
             self.chain_state_unconfirmed = False
@@ -2121,6 +1790,7 @@ class ChainTimerApp:
                 self.last_chain_current = current_value
             elif timeout_value <= 0:
                 self.last_chain_current = current_value
+            # Otherwise ignore stale lower values for display/hit detection.
 
         request_started_mono = result.get("request_started_mono", received_mono)
         if not isinstance(request_started_mono, (int, float)):
@@ -2133,12 +1803,22 @@ class ChainTimerApp:
             elapsed_since_previous_report = request_elapsed
 
         if hit_detected:
+            # A rising chain count is positive evidence of a successful hit even
+            # when Torn's chain endpoint incorrectly reports timeout=0. In that
+            # case, start the 5-minute timer from the newly observed hit/count
+            # change rather than immediately expiring the countdown. Subtract the
+            # interval since the previous successful poll to avoid granting extra time.
             if timeout_value <= 0:
                 timeout_value = float(CHAIN_TIMEOUT_SECONDS)
             else:
                 timeout_value = float(CHAIN_TIMEOUT_SECONDS)
             self.last_api_timeout_received = float(result["timeout"])
 
+        # Startup recovery: a newly opened app has no local deadline to compare
+        # against. If the chain endpoint incorrectly/stalely reports timeout=0
+        # but the attacks feed contains a successful chain hit within the last
+        # five minutes, rebuild the countdown from that attack timestamp instead
+        # of immediately declaring the active chain expired.
         startup_recovered_from_attack = False
         latest_attack_timestamp = result.get("latest_success_timestamp")
         if ((self.deadline_mono is None or self.startup_sync_pending) and timeout_value <= 0
@@ -2149,14 +1829,27 @@ class ChainTimerApp:
                 timeout_value = max(0.0, float(CHAIN_TIMEOUT_SECONDS) - attack_age)
                 self.last_api_timeout_received = float(result["timeout"])
                 startup_recovered_from_attack = True
-                self.set_message("Startup recovery: chain API reported 0, but a recent successful chain hit was found.")
+                self.set_message(
+                    "Startup recovery: chain API reported 0, but a recent successful "
+                    "chain hit was found; rebuilding timer from its timestamp."
+                )
 
+        # During startup, do not let a stale or implausibly short API timeout
+        # replace the 10:00 synchronization countdown. This is the observed
+        # failure mode: the display starts correctly, then a cached 0-14 second
+        # timeout overwrites it and immediately triggers the flatline.
+        # A confirmed count/timestamp increase or a recent successful attack
+        # recovered above is still allowed to synchronize the timer.
         if (self.startup_sync_pending
                 and not hit_detected
                 and not startup_recovered_from_attack
                 and timeout_value < 15.0):
             self.chain_state_unconfirmed = True
-            self.set_message(f"Startup sync still pending: ignored suspicious Torn timeout {int(max(0.0, timeout_value))}s.")
+            self.set_message(
+                f"Startup sync still pending: ignored suspicious Torn timeout "
+                f"{int(max(0.0, timeout_value))}s; keeping the 10:00 grace countdown "
+                "until a usable timer or confirmed new hit is received."
+            )
             return
 
         if timeout_value > 0 or hit_detected or startup_recovered_from_attack:
@@ -2167,49 +1860,86 @@ class ChainTimerApp:
             self.last_timeout_change_monotonic = now_mono
 
         if hit_detected and isinstance(latest_attack_ts, (int, float)) and latest_attack_ts > 0 and attack_timestamp_is_new:
+            # Use the actual successful-attack end timestamp, not the time at which
+            # the polling loop finally noticed it. This handles several hits arriving
+            # between reports and avoids granting a fresh 5:00 at late detection.
             hit_age_seconds = max(0.0, time.time() - float(latest_attack_ts))
             proposed_deadline_mono = now_mono + max(0.0, float(CHAIN_TIMEOUT_SECONDS) - hit_age_seconds)
         elif hit_detected:
+            # Fallback when the attacks feed is unavailable: subtract the elapsed
+            # time since the previous successful poll.
             proposed_deadline_mono = now_mono + max(0.0, timeout_value - elapsed_since_previous_report)
         else:
             proposed_deadline_mono = received_mono + timeout_value
         proposed_deadline_wall = time.time() + max(0.0, proposed_deadline_mono - now_mono)
 
+        # Process every successful API report, but don't blindly trust it to
+        # replace the local deadline: Torn may briefly return a stale timeout.
+        # A report is considered safe to reconcile only when its remaining time
+        # is close to our local estimate. A new chain.current value is the only
+        # signal that authorizes a fresh five-minute anchor.
         if (not hit_detected and self.deadline_mono is not None
                 and not self.startup_sync_pending):
             local_remaining = max(0.0, self.deadline_mono - now_mono)
             api_remaining_now = max(0.0, received_mono + float(result["timeout"]) - now_mono)
             discrepancy = abs(api_remaining_now - local_remaining)
 
+            # Ignore a zero/expired report if our local timer still has meaningful
+            # time remaining; it may be an older cached response. If both clocks
+            # are near expiry, allow the normal expiry handling below.
             if timeout_value <= 0 and local_remaining > 15.0:
+                self.set_message(
+                    f"API reports expired chain, but local countdown has "
+                    f"{int(local_remaining)//60}:{int(local_remaining)%60:02d}; "
+                    "possible stale report ignored."
+                )
                 return
 
+            # Accept useful API updates when they agree within 15 seconds. Larger
+            # gaps are treated as stale/inconsistent; the report is still consumed
+            # for chain-count and timing baselines above, so later hits are detected.
             if discrepancy > 15.0:
+                self.set_message(
+                    f"API report processed (chain {current_value if current_value is not None else '—'}); "
+                    f"API remaining {int(api_remaining_now)//60}:{int(api_remaining_now)%60:02d}, "
+                    f"local remaining {int(local_remaining)//60}:{int(local_remaining)%60:02d}. "
+                    "Large discrepancy; keeping local countdown to avoid stale resync."
+                )
                 return
 
         if timeout_value <= 0:
+            # A zero timeout alone is not enough to prove that the live chain is
+            # expired. Do not overwrite a local deadline or play the deadline sound
+            # unless a real expiry is supported by confirmed data.
             self.stop_alarm()
             if self.deadline_mono is not None:
                 local_remaining = self.deadline_mono - now_mono
                 if local_remaining > 0:
+                    self.set_message(
+                        f"Torn API timeout is 0, but chain state is unconfirmed; "
+                        f"keeping the local countdown at {int(local_remaining)//60}:"
+                        f"{int(local_remaining)%60:02d}. Deadline sound suppressed "
+                        "until a new hit or confirmed timer state is received."
+                    )
                     return
+                # Keep the display at 00:00 once the local countdown has elapsed.
+                # The user explicitly wants the startup/local timer to expire audibly
+                # even if Torn's API remains stuck at timeout=0.
                 self.deadline_mono = min(self.deadline_mono, now_mono)
                 self.deadline = time.time()
             self._last_applied_timeout = timeout_value
-            self.set_message("Torn API timeout is 0; local countdown is allowed to reach 00:00.")
+            self.set_message(
+                "Torn API timeout is 0; local countdown is allowed to reach 00:00 "
+                "and announce expiry even while chain state is unconfirmed."
+            )
             return
 
         previous_deadline_mono = self.deadline_mono
-        deadline_changed_significantly = (
-            previous_deadline_mono is None
-            or abs(proposed_deadline_mono - previous_deadline_mono) > 10
-        )
-        if hit_detected or deadline_changed_significantly:
-            self.stop_alarm()
-
         self.deadline_mono = proposed_deadline_mono
         self.deadline = proposed_deadline_wall
         self._last_applied_timeout = timeout_value
+        # A usable API timer (or a confirmed new hit) has now replaced the
+        # temporary 10:00 startup synchronization countdown.
         self.startup_sync_pending = False
 
         if previous_deadline_mono is None or abs(proposed_deadline_mono - previous_deadline_mono) > 10:
@@ -2226,9 +1956,13 @@ class ChainTimerApp:
             self.set_message("The chain timer has expired.")
         else:
             self.set_message(
-                (f"New successful hit detected (chain count {current_value}); timer anchored to attack timestamp."
+                (f"New successful hit detected (chain count {current_value}); "
+                 f"timer anchored to attack timestamp when available. API timeout was "
+                 f"{int(result['timeout'])//60}:{int(result['timeout'])%60:02d}; "
+                 f"local timer set to {max(0, int(proposed_deadline_mono - now_mono))//60}:"
+                 f"{max(0, int(proposed_deadline_mono - now_mono))%60:02d}."
                  if hit_detected else
-                 f"API reports {int(timeout_value)} sec; countdown synchronized.")
+                 f"API reports {int(timeout_value)} sec ({int(timeout_value)//60}:{int(timeout_value)%60:02d}); countdown synchronized.")
             )
 
     # --------------------------------------------------------
@@ -2265,6 +1999,7 @@ class ChainTimerApp:
         self.compact_unchanged_label.config(text=unchanged_text, fg=unchanged_color)
 
     def update_chain_milestone_warning(self):
+        """Show a centered warning during the last 20 hits before each milestone."""
         count = self.last_chain_current
         warning_text = ""
         if isinstance(count, (int, float)):
@@ -2285,6 +2020,7 @@ class ChainTimerApp:
                     fill="x", pady=(1, 2), after=self.countdowns_row
                 )
                 self.chain_milestone_warning_visible = True
+                # Speak once when a milestone warning first triggers, not on every UI refresh.
                 self.speak("Watch faction chat")
         elif self.chain_milestone_warning_visible:
             self.chain_milestone_warning_label.pack_forget()
@@ -2297,8 +2033,7 @@ class ChainTimerApp:
             remaining = max(0, int(math.ceil(self.deadline_mono - now_mono)))
         if remaining is not None:
             self.announce_countdown_milestones(remaining)
-            if (0 < remaining <= 60 and not self.one_minute_failsafe_sent
-                    and not self.discord_failsafe_disabled):
+            if 0 < remaining <= 60 and not self.one_minute_failsafe_sent:
                 self.one_minute_failsafe_sent = True
                 self.send_one_minute_failsafe()
         timer_text = "--:--" if remaining is None else f"{remaining // 60:02d}:{remaining % 60:02d}"
@@ -2313,19 +2048,25 @@ class ChainTimerApp:
         if self.last_chain_current is None:
             self.chain_hits_label.config(text="—")
         else:
+            # Format counts with comma separators, e.g. 39,475 / 100,000.
             self.chain_hits_label.config(text=f"{self.last_chain_current:,}")
         self.update_chain_milestone_warning()
         self.update_warning_labels(now_mono)
-        if remaining is not None and 0 < remaining <= ALARM_START_SECONDS and not self.mute_audio_alerts:
+        if remaining is not None and 0 < remaining <= ALARM_START_SECONDS:
             self.start_alarm()
-        elif self.mute_audio_alerts:
-            self.stop_alarm()
         if remaining is not None and remaining <= 0:
             self.stop_alarm()
             if not self.expiry_handled:
+                # Keep 00:00 visible and play/speak expiry once, even if the API
+                # cannot confirm the chain state. A later usable timer or new hit
+                # resets this flag and starts a fresh countdown.
                 self.expiry_handled = True
                 self.play_failure_sound_once()
-                self.set_message("Countdown expired at 00:00.")
+                # announce_countdown_milestones() above already speaks the expiry.
+                self.set_message(
+                    "Countdown expired at 00:00. Expiry sound and announcement triggered. "
+                    "Torn API chain state may still be unconfirmed."
+                )
         try:
             self.root.after(200, self.update_display)
         except tk.TclError:
@@ -2336,84 +2077,53 @@ class ChainTimerApp:
     # --------------------------------------------------------
 
     def speak(self, phrase):
-        if os.name != "nt" or self.speech_stop_event.is_set() or self.mute_audio_alerts:
+        if os.name != "nt":
             return
-        phrase = str(phrase).strip()
-        if not phrase:
-            return
+        escaped_phrase = phrase.replace("'", "''")
+        powershell_script = (
+            "Add-Type -AssemblyName System.Speech; "
+            "$voice = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$voice.Speak('{escaped_phrase}'); "
+            "$voice.Dispose()"
+        )
         try:
-            self.speech_queue.put_nowait(phrase)
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen(
+                ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                 "-ExecutionPolicy", "Bypass", "-Command", powershell_script],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=creation_flags, close_fds=True
+            )
         except Exception as exc:
-            print("Speech announcement could not be queued:", exc)
-
-    def speech_worker(self):
-        while not self.speech_stop_event.is_set():
-            try:
-                phrase = self.speech_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
-            if phrase is None:
-                self.speech_queue.task_done()
-                return
-            if self.mute_audio_alerts:
-                self.speech_queue.task_done()
-                continue
-            try:
-                import base64
-                ps = (
-                    "Add-Type -AssemblyName System.Speech; "
-                    "$voice = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
-                    "$voice.Speak([Console]::In.ReadToEnd()); "
-                    "$voice.Dispose()"
-                )
-                encoded = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
-                creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                subprocess.run(
-                    ["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
-                     "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
-                    input=phrase,
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    timeout=30,
-                    creationflags=creation_flags,
-                    close_fds=True,
-                )
-            except Exception as exc:
-                print("Speech announcement failed:", exc)
-            finally:
-                self.speech_queue.task_done()
+            print("Speech announcement could not start:", exc)
 
     def announce_countdown_milestones(self, remaining):
         if self.deadline_mono is None:
             return
-        milestones = (
-            (120, "Two minutes remaining."),
-            (60, "One minute remaining."),
-            (40, "Forty seconds remaining."),
-            (20, "Twenty seconds remaining."),
-        )
         if self.speech_deadline is None:
             self.speech_deadline = self.deadline
         if self.last_speech_remaining is None:
             if remaining <= 0:
-                self.spoken_milestones.update(m for m, _ in milestones)
-                if 0 not in self.spoken_milestones:
-                    self.speak("Chain timeout expired.")
-                    self.spoken_milestones.add(0)
-            else:
-                upcoming = next(((m, phrase) for m, phrase in milestones if remaining <= m), None)
+                self.spoken_milestones.update((60, 40, 20))
+            elif remaining <= 60:
+                upcoming = next((m for m in (20, 40, 60) if remaining <= m), None)
                 if upcoming is not None:
-                    milestone, phrase = upcoming
-                    for higher, _ in milestones:
-                        if higher > milestone:
-                            self.spoken_milestones.add(higher)
-                    if milestone not in self.spoken_milestones:
-                        self.speak(phrase)
-                        self.spoken_milestones.add(milestone)
+                    for milestone in (60, 40, 20):
+                        if milestone > upcoming:
+                            self.spoken_milestones.add(milestone)
+                    if upcoming not in self.spoken_milestones:
+                        self.speak({60: "One minute remaining.", 40: "Forty seconds remaining.",
+                                    20: "Twenty seconds remaining."}[upcoming])
+                        self.spoken_milestones.add(upcoming)
             self.last_speech_remaining = remaining
+            if remaining <= 0 and 0 not in self.spoken_milestones:
+                self.speak("Chain timeout expired.")
+                self.spoken_milestones.add(0)
             return
-        for milestone, phrase in milestones:
+        for milestone, phrase in (
+            (60, "One minute remaining."), (40, "Forty seconds remaining."),
+            (20, "Twenty seconds remaining.")
+        ):
             if (milestone not in self.spoken_milestones
                     and self.last_speech_remaining > milestone
                     and remaining <= milestone and remaining > 0):
@@ -2429,31 +2139,18 @@ class ChainTimerApp:
     # --------------------------------------------------------
 
     def start_alarm(self):
-        if self.mute_audio_alerts:
-            return
         with self.alarm_lock:
             if self.alarm_thread and self.alarm_thread.is_alive():
                 return
             self.alarm_stop_event.clear()
-            generation = self.alarm_generation
-            self.alarm_thread_generation = generation
-            self.alarm_thread = threading.Thread(
-                target=self.alarm_worker, args=(generation,), daemon=True,
-                name="ChainTimerAlarm"
-            )
+            self.alarm_thread = threading.Thread(target=self.alarm_worker, daemon=True)
             self.alarm_thread.start()
 
     def stop_alarm(self):
-        with self.alarm_lock:
-            self.alarm_generation += 1
-            self.alarm_stop_event.set()
+        self.alarm_stop_event.set()
 
-    def alarm_sequence_is_current(self, generation):
-        return (not self.alarm_stop_event.is_set()
-                and generation == self.alarm_generation)
-
-    def alarm_worker(self, generation):
-        while self.alarm_sequence_is_current(generation) and not self.mute_audio_alerts:
+    def alarm_worker(self):
+        while not self.alarm_stop_event.is_set():
             deadline = self.deadline_mono
             if deadline is None:
                 return
@@ -2463,55 +2160,33 @@ class ChainTimerApp:
             try:
                 if winsound is not None:
                     if remaining <= 20:
-                        beep_frequency = FINAL_BEEP_FREQUENCY
-                        beep_duration = FINAL_BEEP_DURATION_MS
-                        second_frequency = FINAL_BEEP_FREQUENCY - 300
-                        second_duration = 120
-                        between = 0.04
+                        winsound.Beep(FINAL_BEEP_FREQUENCY, FINAL_BEEP_DURATION_MS)
+                        if self.alarm_stop_event.wait(0.04):
+                            return
+                        winsound.Beep(FINAL_BEEP_FREQUENCY - 300, 120)
                         pause = FINAL_BEEP_PAUSE_MS / 1000.0
                     elif remaining <= 40:
-                        beep_frequency = NORMAL_BEEP_FREQUENCY
-                        beep_duration = NORMAL_BEEP_DURATION_MS
-                        second_frequency = NORMAL_BEEP_FREQUENCY - 200
-                        second_duration = 180
-                        between = 0.10
+                        winsound.Beep(NORMAL_BEEP_FREQUENCY, NORMAL_BEEP_DURATION_MS)
+                        if self.alarm_stop_event.wait(0.10):
+                            return
+                        winsound.Beep(NORMAL_BEEP_FREQUENCY - 200, 180)
                         pause = NORMAL_BEEP_PAUSE_MS / 1000.0
                     elif remaining <= 60:
-                        beep_frequency = SLOW_BEEP_FREQUENCY
-                        beep_duration = SLOW_BEEP_DURATION_MS
-                        second_frequency = SLOW_BEEP_FREQUENCY - 180
-                        second_duration = 180
-                        between = 0.12
+                        winsound.Beep(SLOW_BEEP_FREQUENCY, SLOW_BEEP_DURATION_MS)
+                        if self.alarm_stop_event.wait(0.12):
+                            return
+                        winsound.Beep(SLOW_BEEP_FREQUENCY - 180, 180)
                         pause = SLOW_BEEP_PAUSE_MS / 1000.0
                     else:
-                        if self.alarm_stop_event.wait(0.05):
-                            return
-                        continue
-
-                    if not self.alarm_sequence_is_current(generation):
-                        return
-                    winsound.Beep(beep_frequency, beep_duration)
-
-                    if not self.alarm_sequence_is_current(generation):
-                        return
-                    if self.alarm_stop_event.wait(between):
-                        return
-                    if not self.alarm_sequence_is_current(generation):
-                        return
-                    winsound.Beep(second_frequency, second_duration)
+                        pause = 0.05
                 else:
                     pause = 0.2
-            except Exception as exc:
-                print("Alarm sound error:", exc)
+            except Exception:
                 pause = 0.2
             if self.alarm_stop_event.wait(pause):
                 return
 
     def play_failure_sound_once(self):
-        if self.mute_audio_alerts:
-            self.stop_alarm()
-            self.failure_sound_played = True
-            return
         if self.failure_sound_played:
             return
         self.failure_sound_played = True
@@ -2530,7 +2205,6 @@ class ChainTimerApp:
     # --------------------------------------------------------
 
     def close_app(self):
-        self.close_settings_menu()
         self.polling = False
         self.poll_stop_event.set()
         self.players_poll_stop_event.set()
@@ -2539,65 +2213,10 @@ class ChainTimerApp:
         self.close_online_window()
         self.close_chat_window()
         self.stop_alarm()
-        self.speech_stop_event.set()
-        try:
-            self.speech_queue.put_nowait(None)
-        except Exception:
-            pass
         self.root.destroy()
 
 
-# ============================================================
-# DEBUG / TEST MODE
-# ============================================================
-TEST_MODE = False
-DEBUG_TEST_SECONDS = 130
-
-
-class DebugChainTimerApp(ChainTimerApp):
-    def start_polling(self):
-        print("[DEBUG] Torn API polling disabled.")
-
-    def start_players_polling(self):
-        print("[DEBUG] Guard-list polling disabled.")
-
-    def start_online_presence(self):
-        print("[DEBUG] Online presence disabled.")
-
-    def send_offline_presence(self):
-        print("[DEBUG] Offline presence disabled.")
-
-    def call_for_help(self):
-        print("[DEBUG] CALL FOR HELP is disabled in TEST_MODE.")
-        self.set_message("CALL FOR HELP is disabled in TEST_MODE.")
-
-    def start_debug_countdown(self):
-        self.stop_alarm()
-        self.deadline_mono = time.monotonic() + DEBUG_TEST_SECONDS
-        self.deadline = time.time() + DEBUG_TEST_SECONDS
-        self.speech_deadline = None
-        self.spoken_milestones.clear()
-        self.last_speech_remaining = None
-        self.failure_sound_played = False
-        self.expiry_handled = False
-        self.one_minute_failsafe_sent = False
-        self.startup_sync_pending = False
-        self.chain_state_unconfirmed = False
-        state = "DISABLED" if self.discord_failsafe_disabled else "ENABLED"
-        self.set_message(f"TEST MODE: {DEBUG_TEST_SECONDS}s countdown started.")
-
-
-# ------------------------------------------------------------
-# APPLICATION ENTRY POINT
-# ------------------------------------------------------------
-
 if __name__ == "__main__":
-    if TEST_MODE:
-        root = tk.Tk()
-        app = DebugChainTimerApp(root)
-        root.after(100, app.start_debug_countdown)
-        root.mainloop()
-    else:
-        root = tk.Tk()
-        app = ChainTimerApp(root)
-        root.mainloop()
+    root = tk.Tk()
+    app = ChainTimerApp(root)
+    root.mainloop()
